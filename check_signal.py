@@ -102,5 +102,5 @@ def main():
         print(f"سیگنالی نیست. fast={fast[i]:.4f} slow={slow[i]:.4f}")
 
 
-if name == "__main__":
+if __name__ == "__main__":
     main()
