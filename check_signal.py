@@ -202,5 +202,5 @@ def main():
     print("ایمیل سیگنال ارسال شد.")
 
 
-if name == "__main__":
+if __name__ == "__main__":
     main()
