@@ -37,11 +37,13 @@ def fetch_klines(symbol, interval, limit=200):
     """دریافت کندل‌ها (شامل high/low/close) از Bitunix."""
     url = f"https://fapi.bitunix.com/api/v1/futures/market/kline?symbol={symbol}&interval={interval}&limit={limit}"
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, timeout=15) as res:
-     payload = json.loads(res.read().decode())
-   print("URL:", url)
+  with urllib.request.urlopen(req, timeout=15) as res:
+    payload = json.loads(res.read().decode())
+
+print("URL:", url)
 print("Payload:", json.dumps(payload, indent=2))
-  rows = payload.get("data", [])
+
+rows = payload.get("data", [])
     if not rows:
         raise RuntimeError(f"داده‌ای از Bitunix برنگشت: {payload}")
     candles = [
