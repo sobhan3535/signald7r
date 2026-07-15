@@ -1,4 +1,99 @@
-trs = [None]
+"""
+Signal Watcher — سیستم سیگنال‌دهی ترکیبی (شبیه به مفهوم کلی D7R)
+ترکیبی از ۴ جزء که هر کدوم یه بخش از تحلیل تکنیکال رو پوشش می‌دن:
+  ۱. EMA Cross          -> تشخیص روند (Trend)
+  ۲. RSI                -> تایید مومنتوم (Momentum)
+  ۳. ATR                -> فیلتر نوسان/ساختار بازار (Market Structure)
+  ۴. Scoring             -> سیگنال فقط وقتی صادر می‌شه که هر سه شرط تایید کنن
+
+این اسکریپت طوری طراحی شده که هر بار اجرا می‌شود، فقط آخرین کندل بسته‌شده را
+بررسی می‌کند. اگر با GitHub Actions هر ۱۵ دقیقه (هم‌زمان با تایم‌فریم چارت)
+اجرا شود، هر کندل دقیقاً یک‌بار بررسی می‌شود و نیازی به ذخیره وضعیت قبلی نیست.
+
+نکته مهم: این یه بازسازی مستقل بر اساس مفاهیم عمومی تحلیل تکنیکاله،
+نه بازسازی دقیق فرمول‌های واقعی D7R (که منتشر نشدن).
+"""
+
+import os
+from datetime import datetime, timezone
+import urllib.request
+import json
+
+# ---------- تنظیمات (از GitHub Secrets خوانده می‌شود) ----------
+SYMBOL = os.environ.get("SYMBOL", "TAOUSDT")
+INTERVAL = os.environ.get("INTERVAL", "15m")   # باید با زمان‌بندی cron هماهنگ باشد
+FAST_LEN = int(os.environ.get("FAST_LEN", "9"))
+SLOW_LEN = int(os.environ.get("SLOW_LEN", "21"))
+RSI_LEN = int(os.environ.get("RSI_LEN", "14"))
+ATR_LEN = int(os.environ.get("ATR_LEN", "14"))
+MIN_SCORE = int(os.environ.get("MIN_SCORE", "3"))   # از ۳ امتیاز ممکن (کراس + RSI + ATR) — سخت‌گیرترین حالت: هر سه شرط باید تایید کنن
+
+# ایمیل از طریق Resend API ارسال می‌شود — ساده‌ترین گزینه، بدون نیاز به دامنه یا پسورد گوگل
+RESEND_API_KEY = os.environ["RESEND_API_KEY"]   # از dashboard Resend -> API Keys
+ALERT_TO       = os.environ["ALERT_TO"]         # همون ایمیلی که با آن در Resend ثبت‌نام کردی
+
+
+def fetch_klines(symbol, interval, limit=200):
+    """دریافت کندل‌ها (شامل high/low/close) از Bitunix."""
+    url = f"https://fapi.bitunix.com/api/v1/futures/market/kline?symbol={symbol}&interval={interval}&limit={limit}"
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=15) as res:
+        payload = json.loads(res.read().decode())
+    rows = payload.get("data", [])
+    if not rows:
+        raise RuntimeError(f"داده‌ای از Bitunix برنگشت: {payload}")
+    candles = [
+        {
+            "time": int(row["time"]),
+            "high": float(row["high"]),
+            "low": float(row["low"]),
+            "close": float(row["close"]),
+        }
+        for row in rows
+    ]
+    candles.sort(key=lambda c: c["time"])
+    return candles
+
+
+def ema(values, length):
+    """میانگین متحرک نمایی — به قیمت‌های اخیر وزن بیشتری می‌ده و لگ کمتری داره."""
+    out = [None] * len(values)
+    k = 2 / (length + 1)
+    prev = None
+    for i, v in enumerate(values):
+        if i == length - 1:
+            prev = sum(values[:length]) / length
+            out[i] = prev
+        elif i >= length:
+            prev = v * k + prev * (1 - k)
+            out[i] = prev
+    return out
+
+
+def rsi(closes, length):
+    """RSI کلاسیک با روش هموارسازی وایلدر."""
+    out = [None] * len(closes)
+    gains, losses = [], []
+    for i in range(1, len(closes)):
+        change = closes[i] - closes[i - 1]
+        gains.append(max(change, 0))
+        losses.append(max(-change, 0))
+        if i >= length:
+            if i == length:
+                avg_gain = sum(gains[:length]) / length
+                avg_loss = sum(losses[:length]) / length
+            else:
+                avg_gain = (out[i - 1]["avg_gain"] * (length - 1) + gains[-1]) / length
+                avg_loss = (out[i - 1]["avg_loss"] * (length - 1) + losses[-1]) / length
+            rs = avg_gain / avg_loss if avg_loss != 0 else float("inf")
+            value = 100 - (100 / (1 + rs))
+            out[i] = {"value": value, "avg_gain": avg_gain, "avg_loss": avg_loss}
+    return [o["value"] if o else None for o in out]
+
+
+def atr(candles, length):
+    """میانگین محدوده واقعی (ATR) — برای تشخیص کافی بودن نوسان بازار."""
+    trs = [None]
     for i in range(1, len(candles)):
         high, low, prev_close = candles[i]["high"], candles[i]["low"], candles[i - 1]["close"]
         tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
